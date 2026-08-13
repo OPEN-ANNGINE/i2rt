@@ -161,7 +161,12 @@ class DMSingleMotorCanInterface(CanInterface):
         id = motor_id  # self._get_frame_id(motor_id)
         data = [0xFF] * 7 + [0xFC]
 
-        message = self._send_message_get_response(id, motor_id, data)
+        # Enable is uniquely boot-sensitive: a motor powered moments before
+        # launch can stay silent for >100 ms while its firmware comes up, and
+        # the default 5 tries (~55 ms) then kill the whole bring-up. ~40 tries
+        # spans ~0.4 s, which rides out DM43xx boot without masking real
+        # wiring faults (those fail for seconds, not milliseconds).
+        message = self._send_message_get_response(id, motor_id, data, max_retry=40)
 
         # dummy motor type just check motor status
         motor_info = self.parse_recv_message(message, MotorType.DM4310, ignore_error=True)
