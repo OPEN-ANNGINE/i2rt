@@ -509,16 +509,15 @@ class MotorChainRobot(Robot):
             return np.zeros(len(self.motor_chain))
         elif self.use_gravity_comp:
             q = joint_state.pos[: self._gripper_index] if self._gripper_index is not None else joint_state.pos
-            t = self.kdl.compute_inverse_dynamics(q, np.zeros(q.shape), np.zeros(q.shape))
+            zeros = np.zeros(q.shape)
+            t = self.kdl.compute_inverse_dynamics(q, zeros, zeros)  # once per cycle, not twice
             # print gravity torque to 2f
             if np.max(np.abs(t)) > 25.0:
                 print([f"{s:.2f}" for s in t])
                 raise RuntimeError(f"{self}: too large torques")
             if self._gripper_index is None:
-                return self.kdl.compute_inverse_dynamics(q, np.zeros(q.shape), np.zeros(q.shape))
-            else:
-                t = self.kdl.compute_inverse_dynamics(q, np.zeros(q.shape), np.zeros(q.shape))
-                return np.append(t, 0.0)
+                return t
+            return np.append(t, 0.0)
 
     # ----------------- Server Functions ----------------- #
 
@@ -583,14 +582,17 @@ class MotorChainRobot(Robot):
         """
         pos = self._clip_robot_joint_pos_command(joint_state["pos"])
         vel = joint_state["vel"]
-        self._commands = JointCommands.init_all_zero(len(self.motor_chain))
         kp = joint_state.get("kp", self._kp)
         kd = joint_state.get("kd", self._kd)
+        commands = JointCommands.init_all_zero(len(self.motor_chain))
+        commands.pos = self.remapper.to_robot_joint_pos_space(pos)
+        commands.vel = self.remapper.to_robot_joint_vel_space(vel)
+        commands.kp = kp
+        commands.kd = kd
         with self._command_lock:
-            self._commands.pos = self.remapper.to_robot_joint_pos_space(pos)
-            self._commands.vel = self.remapper.to_robot_joint_vel_space(vel)
-            self._commands.kp = kp
-            self._commands.kd = kd
+            # publish fully built; update() deep-copies under this lock and must never see a
+            # half-initialised command (all-zero kp with a zero pos target)
+            self._commands = commands
 
     def zero_torque_mode(self) -> None:
         logging.info(f"Entering zero_torque_mode for {self}")
@@ -656,6 +658,14 @@ class MotorChainRobot(Robot):
         finally:
             self.stop_mcap_recording()
         print("Robot closed with all torques set to zero.")
+
+    def healthy(self) -> bool:
+        """True while both the CAN control thread and the grav-comp server thread are alive.
+
+        Faults inside either thread stop it and raise there; a caller polling this every
+        tick can park through a sibling arm instead of commanding a dead chain.
+        """
+        return bool(getattr(self.motor_chain, "running", False)) and self._server_thread.is_alive()
 
     def update_kp_kd(self, kp: np.ndarray, kd: np.ndarray) -> None:
         assert kp.shape == self._kp.shape == kd.shape

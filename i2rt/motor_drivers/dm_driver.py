@@ -537,8 +537,9 @@ class DMChainCanInterface(MotorChain):
         if self.start_thread_flag:
             return
         logging.info("starting separate thread for control loop")
-        thread = threading.Thread(target=self._set_torques_and_update_state)
+        thread = threading.Thread(target=self._set_torques_and_update_state, name=f"dm-can-{self.channel}", daemon=True)
         thread.start()
+        self._control_thread = thread
         self.start_thread_flag = True
         time.sleep(0.1)
         while self.state is None:
@@ -582,30 +583,34 @@ class DMChainCanInterface(MotorChain):
                         max_step_time = 0.0
                         report_start_time = curr_time
 
-                    # Update state
+                    # Update state. Snapshot the command list under the lock and run the
+                    # (multi-millisecond) CAN transaction outside it: set_commands() swaps
+                    # the whole list atomically, so a snapshot is consistent, and callers
+                    # of set_commands()/read_states() no longer stall behind the bus.
                     with self.command_lock:
-                        try:
-                            motor_feedback = self._set_commands(self.commands)
-                        except RuntimeError as e:
-                            if self.enable_auto_recovery and "Motor error detected" in str(e):
-                                logging.warning(f"Motor error in control loop, attempting recovery: {e}")
-                                if self._try_recover_motors():
-                                    logging.warning("Motor recovery successful, continuing control loop")
-                                    continue
-                                self.running = False
-                                raise
-                            raise
-
-                        errors = np.array([motor_feedback[i].error_code != "0x1" for i in range(len(motor_feedback))])
-                        if np.any(errors):
-                            if self.enable_auto_recovery:
-                                logging.warning(f"Motor errors detected in feedback: {errors}, attempting recovery")
-                                if self._try_recover_motors(motor_feedback):
-                                    logging.warning("Motor recovery successful, continuing control loop")
-                                    continue
+                        commands = self.commands
+                    try:
+                        motor_feedback = self._set_commands(commands)
+                    except RuntimeError as e:
+                        if self.enable_auto_recovery and "Motor error detected" in str(e):
+                            logging.warning(f"Motor error in control loop, attempting recovery: {e}")
+                            if self._try_recover_motors():
+                                logging.warning("Motor recovery successful, continuing control loop")
+                                continue
                             self.running = False
-                            logging.error(f"motor errors: {errors}")
-                            raise Exception(f"motor errors detected: {errors}, stopping control loop")
+                            raise
+                        raise
+
+                    errors = np.array([motor_feedback[i].error_code != "0x1" for i in range(len(motor_feedback))])
+                    if np.any(errors):
+                        if self.enable_auto_recovery:
+                            logging.warning(f"Motor errors detected in feedback: {errors}, attempting recovery")
+                            if self._try_recover_motors(motor_feedback):
+                                logging.warning("Motor recovery successful, continuing control loop")
+                                continue
+                        self.running = False
+                        logging.error(f"motor errors: {errors}")
+                        raise Exception(f"motor errors detected: {errors}, stopping control loop")
 
                     with self.state_lock:
                         self.state = motor_feedback
@@ -654,7 +659,9 @@ class DMChainCanInterface(MotorChain):
             time.sleep(0.01)
             try:
                 with self.command_lock:
-                    motor_feedback = self._set_commands(self.commands)
+                    commands = self.commands
+                motor_feedback = self._set_commands(commands)
+                if True:
                     if all(fb.error_code == "0x1" for fb in motor_feedback):
                         logging.warning("All motors recovered successfully")
                         with self.state_lock:
@@ -752,7 +759,13 @@ class DMChainCanInterface(MotorChain):
             return self.same_bus_device_states
 
     def close(self) -> None:
+        # I7: stop the control thread BEFORE shutting the socket. Closing first let the thread's
+        # in-flight transaction die on select() over a closed descriptor ("file descriptor
+        # cannot be a negative integer"), which raised in the thread on every teardown.
         self.running = False
+        thread = getattr(self, "_control_thread", None)
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=2.0)
         self.motor_interface.close()
 
 
