@@ -147,6 +147,7 @@ def get_yam_robot(
     enable_auto_recovery: bool = False,
     use_coulomb_friction: bool = False,
     gripper_test_torque: Optional[float] = None,
+    control_freq: Optional[float] = None,  # I8: pace the CAN control thread (Hz); None = i2rt's default
 ) -> "Robot":
     """Create a YAM-family robot (real or sim).
 
@@ -263,6 +264,7 @@ def get_yam_robot(
         get_same_bus_device_driver=get_encoder_chain if with_teaching_handle else None,
         use_buffered_reader=False,
         enable_auto_recovery=enable_auto_recovery,
+        **({"control_freq": float(control_freq)} if control_freq else {}),
     )
     motor_states = motor_chain.read_states()
     logging.debug(f"motor_states: {motor_states}")

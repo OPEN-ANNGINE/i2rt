@@ -444,6 +444,10 @@ class DMChainCanInterface(MotorChain):
         self.state_lock = threading.Lock()
         self._report_interval = report_interval
         self._rate_recorder = RateRecorder(name=self, report_interval=report_interval)
+        # I8 (ann-yam): the control thread is paced to control_freq instead of running as fast as
+        # the bus answers, so its period is regular and an integer fraction of a camera frame.
+        self.control_period = (1.0 / float(control_freq)) if control_freq and control_freq > 0 else 0.0
+        self._next_slot = None
 
         self.same_bus_device_states = None
         self.same_bus_device_lock = threading.Lock()
@@ -620,12 +624,33 @@ class DMChainCanInterface(MotorChain):
                         with self.same_bus_device_lock:
                             # assume the same bus device is a passive input device (no commands to send) for now.
                             self.same_bus_device_states = self.same_bus_device_driver.read_states()
-                    time.sleep(0.0005)  # yield GIL so other threads can acquire locks
                     self._rate_recorder.track()
+                    self._pace()  # I8: hold the period (and yield the GIL) instead of a fixed 0.5 ms nap
                 except Exception as e:
                     print(f"DM Error in control loop: {e}")
                     self.running = False
                     raise e
+
+    def _pace(self) -> None:
+        """Hold the control thread to ``control_freq`` (I8, ann-yam): sleep to 0.4 ms before the
+        next slot and spin the rest; after an overrun of more than one period resync to now
+        instead of bursting to catch up. ``control_freq <= 0`` keeps the old free-running loop
+        with its 0.5 ms GIL yield."""
+        if self.control_period <= 0.0:
+            time.sleep(0.0005)
+            return
+        now = time.perf_counter()
+        if self._next_slot is None or now - self._next_slot > self.control_period:
+            self._next_slot = now + self.control_period
+        else:
+            self._next_slot += self.control_period
+        rem = self._next_slot - now
+        if rem > 0.0006:
+            time.sleep(rem - 0.0004)
+        else:
+            time.sleep(0.0002)  # no slack left: still let other threads take the locks
+        while time.perf_counter() < self._next_slot:
+            pass
 
     def _try_recover_motors(self, motor_feedback: Optional[List[MotorInfo]] = None, max_retries: int = 3) -> bool:
         """Attempt to recover motors that report errors.
