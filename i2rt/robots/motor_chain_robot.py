@@ -19,6 +19,8 @@ from i2rt.robots.utils import ArmType, GripperForceLimiter, GripperType, JointMa
 from i2rt.utils.mujoco_utils import MuJoCoKDL
 from i2rt.utils.recording import RobotMcapRecorder
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class JointStates:
@@ -113,11 +115,10 @@ class MotorChainRobot(Robot):
             )
 
             # Auto-detect gripper limits if enabled and gripper_limits is None
-            print(
+            logger.info(
                 f"initializing motorchain robot, gripper_limits: {gripper_limits}, enable_gripper_calibration: {enable_gripper_calibration}"
             )
             if gripper_limits is None and enable_gripper_calibration:
-                logger = logging.getLogger(__name__)
                 logger.info("Auto-detecting gripper limits...")
                 detected_limits = detect_gripper_limits(
                     motor_chain=motor_chain,
@@ -135,7 +136,6 @@ class MotorChainRobot(Robot):
                 )
             else:
                 # Use the provided gripper_limits
-                logger = logging.getLogger(__name__)
                 logger.info(f"Using provided gripper limits: {gripper_limits}")
 
         self._last_gripper_command_qpos = 1  # initialize as fully open
@@ -327,7 +327,7 @@ class MotorChainRobot(Robot):
         iteration_count = 0
         self.update()
 
-        logging.info("initializing, ....")
+        logger.info("initializing, ....")
 
         while not self._stop_event.is_set():  # Check the stop event
             current_time = time.time()
@@ -342,9 +342,10 @@ class MotorChainRobot(Robot):
             if elapsed_time >= 10.0:
                 control_frequency = iteration_count / elapsed_time
                 # Overwrite the current line with the new frequency information
-                logging.info(f"{self}: Grav Comp Control Frequency: {control_frequency:.2f} Hz")
+                # Periodic (every 10 s): DEBUG. The slow-loop warning below stays visible.
+                logger.debug(f"{self}: Grav Comp Control Frequency: {control_frequency:.2f} Hz")
                 if control_frequency < 100:
-                    logging.warning(
+                    logger.warning(
                         f"{self}: Gravity compensation control loop is slow, current frequency: {control_frequency:.2f} Hz"
                     )
                 # Reset the counter and timer
@@ -436,7 +437,7 @@ class MotorChainRobot(Robot):
                         temp_rotor=self._joint_state.temp_rotor,
                     )
                 except RuntimeError:
-                    logging.exception("MCAP recording stopped after its writer failed")
+                    logger.exception("MCAP recording stopped after its writer failed")
                     self._mcap_recorder = None
 
         # For SWE-454: keep monitoring qpos during runtime
@@ -513,7 +514,7 @@ class MotorChainRobot(Robot):
             t = self.kdl.compute_inverse_dynamics(q, zeros, zeros)  # once per cycle, not twice
             # print gravity torque to 2f
             if np.max(np.abs(t)) > 25.0:
-                print([f"{s:.2f}" for s in t])
+                logger.error(f"{self}: gravity torques {[f'{s:.2f}' for s in t]}")
                 raise RuntimeError(f"{self}: too large torques")
             if self._gripper_index is None:
                 return t
@@ -595,7 +596,7 @@ class MotorChainRobot(Robot):
             self._commands = commands
 
     def zero_torque_mode(self) -> None:
-        logging.info(f"Entering zero_torque_mode for {self}")
+        logger.info(f"Entering zero_torque_mode for {self}")
         with self._command_lock:
             self._commands = JointCommands.init_all_zero(len(self.motor_chain))
             self._kp = np.zeros(len(self.motor_chain))
@@ -657,7 +658,7 @@ class MotorChainRobot(Robot):
             self.motor_chain.close()
         finally:
             self.stop_mcap_recording()
-        print("Robot closed with all torques set to zero.")
+        logger.info("Robot closed with all torques set to zero.")
 
     def healthy(self) -> bool:
         """True while both the CAN control thread and the grav-comp server thread are alive.

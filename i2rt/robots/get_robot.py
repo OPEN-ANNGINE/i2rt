@@ -215,7 +215,7 @@ def get_yam_robot(
         default_kp, default_kd = gripper_type.get_motor_kp_kd(arm_type)
         _gripper_kp = gripper_kp if gripper_kp is not None else default_kp
         _gripper_kd = gripper_kd if gripper_kd is not None else default_kd
-        logging.info(f"adding gripper motor type={motor_type}, kp={_gripper_kp}, kd={_gripper_kd}")
+        logger.info(f"adding gripper motor type={motor_type}, kp={_gripper_kp}, kd={_gripper_kd}")
         motor_list.append([0x07, motor_type])
         motor_offsets.append(0.0)
         directions.append(gripper_type.get_motor_direction(arm_type))
@@ -267,22 +267,22 @@ def get_yam_robot(
         **({"control_freq": float(control_freq)} if control_freq else {}),
     )
     motor_states = motor_chain.read_states()
-    logging.debug(f"motor_states: {motor_states}")
+    logger.debug(f"motor_states: {motor_states}")
 
-    logging.info(f"current_pos: {[m.pos for m in motor_states]}")
+    logger.info(f"current_pos: {[m.pos for m in motor_states]}")
     for idx, state in enumerate(motor_states):
         if state.pos < -np.pi:
-            logging.info(f"motor {idx} pos={state.pos:.3f}, offset -2π")
+            logger.info(f"motor {idx} pos={state.pos:.3f}, offset -2π")
             motor_chain.motor_offset[idx] -= 2 * np.pi
         elif state.pos > np.pi:
-            logging.info(f"motor {idx} pos={state.pos:.3f}, offset +2π")
+            logger.info(f"motor {idx} pos={state.pos:.3f}, offset +2π")
             motor_chain.motor_offset[idx] += 2 * np.pi
 
-    logging.info(f"adjusted motor_offsets: {motor_chain.motor_offset.tolist()}")
+    logger.info(f"adjusted motor_offsets: {motor_chain.motor_offset.tolist()}")
 
     # Start the control thread with corrected offsets.
     motor_chain.start_thread()
-    logging.info(f"YAM initial motor_states: {motor_chain.read_states()}")
+    logger.info(f"YAM initial motor_states: {motor_chain.read_states()}")
 
     get_robot = partial(
         MotorChainRobot,

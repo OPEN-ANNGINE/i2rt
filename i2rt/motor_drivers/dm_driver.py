@@ -27,6 +27,8 @@ log_level = os.getenv("LOGLEVEL", "ERROR").upper()
 # if no log_level is set, set it to WARNING
 logging.basicConfig(level=log_level)
 
+logger = logging.getLogger(__name__)
+
 # set control frequence
 CONTROL_FREQ = 250
 CONTROL_PERIOD = 1.0 / CONTROL_FREQ  # 4 ms
@@ -172,16 +174,16 @@ class DMSingleMotorCanInterface(CanInterface):
         motor_info = self.parse_recv_message(message, MotorType.DM4310, ignore_error=True)
         if int(motor_info.error_code, 16) != MotorErrorCode.normal:
             while int(motor_info.error_code, 16) != MotorErrorCode.normal:
-                logging.info(f"motor {motor_id} error: {motor_info.error_message}")
+                logger.info(f"motor {motor_id} error: {motor_info.error_message}")
                 self.clean_error(motor_id=motor_id)
                 self.try_receive_message()
-                logging.info(f"motor {motor_id} error cleaned")
+                logger.info(f"motor {motor_id} error cleaned")
                 # enable again
 
                 message = self._send_message_get_response(id, motor_id, data)
                 motor_info = self.parse_recv_message(message, motor_type, ignore_error=True)
         else:
-            logging.info(f"motor {motor_id} is already on")
+            logger.info(f"motor {motor_id} is already on")
         logging.getLogger().setLevel(current_level)
         motor_info = self.parse_recv_message(message, motor_type)
         return motor_info
@@ -190,14 +192,14 @@ class DMSingleMotorCanInterface(CanInterface):
         # self.try_receive_message()
         id = motor_id  # self._get_frame_id(motor_id)
         data = [0xFF] * 7 + [0xFB]
-        logging.info("clear error")
+        logger.info("clear error")
         message = can.Message(arbitration_id=motor_id, data=data, is_extended_id=False)
         for _ in range(3):
             try:
                 self.bus.send(message)
             except Exception as e:
-                logging.warning(e)
-                logging.warning(
+                logger.warning(e)
+                logger.warning(
                     "\033[91m" + "CAN Error: Failed to communicate with motor over can bus. Retrying..." + "\033[0m"
                 )
         # message = self._send_message_get_response(id, data)
@@ -228,7 +230,7 @@ class DMSingleMotorCanInterface(CanInterface):
         current_state = self.set_control(id, MotorType.DM4310, 0, 0, 0, 0, 0)
         diff = abs(current_state.position)
         if diff < 0.01:
-            logging.info(f"motor {motor_id} set zero position success, current position: {current_state.position}")
+            logger.info(f"motor {motor_id} set zero position success, current position: {current_state.position}")
         # message = self._receive_message(timeout=0.5)
 
     def set_control(
@@ -309,11 +311,11 @@ class DMSingleMotorCanInterface(CanInterface):
 
         motor_id_of_this_response = self.receive_mode.to_motor_id(message.arbitration_id)
         if error_hex != "0x1":
-            logging.warning(
+            logger.warning(
                 f"motor id: {motor_id_of_this_response}, error: {error_message} at {self.name} and channel {self.bus.channel_info}"
             )
             if not ignore_error:
-                logging.error(
+                logger.error(
                     f"motor id: {motor_id_of_this_response}, error: {error_message} at {self.name} and channel {self.bus.channel_info}"
                 )
                 raise RuntimeError(
@@ -410,7 +412,7 @@ class DMChainCanInterface(MotorChain):
         # Read live each control-loop iteration; must be set before _motor_on()/start_thread() since
         # some callers (e.g. _get_gripper_only_robot) start the thread inside this constructor.
         self.enable_auto_recovery = enable_auto_recovery
-        logging.info(f"Channel: {channel}, Bitrate: {bitrate}")
+        logger.info(f"Channel: {channel}, Bitrate: {bitrate}")
         if "can" in channel:
             self.motor_interface = DMSingleMotorCanInterface(
                 channel=channel,
@@ -434,7 +436,7 @@ class DMChainCanInterface(MotorChain):
         max_bits_per_second = bitrate / 1.1
         if bits_per_second > max_bits_per_second:
             max_safe_freq = max_bits_per_second / (frames_per_cycle * CAN_FRAME_BITS)
-            logging.warning(
+            logger.warning(
                 f"CAN bus bandwidth exceeded: {bits_per_second:.0f} bps > {max_bits_per_second:.0f} bps "
                 f"(bitrate={bitrate}, motors={len(motor_list)}, freq={control_freq}Hz). "
                 f"Max safe frequency: {max_safe_freq:.0f} Hz"
@@ -461,14 +463,14 @@ class DMChainCanInterface(MotorChain):
             if self.same_bus_device_driver is not None:
                 drained = self.motor_interface._drain_bus(timeout_s=0.2)
                 if drained:
-                    logging.info(f"Drained {drained} stale frames before motor bring-up")
+                    logger.info(f"Drained {drained} stale frames before motor bring-up")
 
             self.absolute_positions = None
             self._motor_on()
         starting_command = []
         for motor_state in self.state:
             starting_command.append(MotorCmd(torque=motor_state.torque))
-        logging.info(f"Initializing motorchain with starting command: {starting_command}")
+        logger.info(f"Initializing motorchain with starting command: {starting_command}")
         self.commands = starting_command
         self.command_lock = threading.RLock()
 
@@ -530,7 +532,7 @@ class DMChainCanInterface(MotorChain):
         motor_feedback = []
         self.motor_interface._drain_bus(timeout_s=0.05)
         for motor_id, motor_type in self.motor_list:
-            logging.info(f"Turning on motor_id: {motor_id}, motor_type: {motor_type}")
+            logger.info(f"Turning on motor_id: {motor_id}, motor_type: {motor_type}")
             time.sleep(0.003)
             motor_feedback.append(self.motor_interface.motor_on(motor_id, motor_type))
         self._update_absolute_positions(motor_feedback)
@@ -540,7 +542,7 @@ class DMChainCanInterface(MotorChain):
     def start_thread(self) -> None:
         if self.start_thread_flag:
             return
-        logging.info("starting separate thread for control loop")
+        logger.info("starting separate thread for control loop")
         thread = threading.Thread(target=self._set_torques_and_update_state, name=f"dm-can-{self.channel}", daemon=True)
         thread.start()
         self._control_thread = thread
@@ -548,7 +550,7 @@ class DMChainCanInterface(MotorChain):
         time.sleep(0.1)
         while self.state is None:
             time.sleep(0.1)
-            logging.info("waiting for the first state")
+            logger.info("waiting for the first state")
 
     def _set_torques_and_update_state(self) -> None:
         """
@@ -578,7 +580,8 @@ class DMChainCanInterface(MotorChain):
                     # If step_time > EXPECTED_CONTROL_PERIOD, report every report_interval seconds
                     if step_time_exceed_count > 0 and curr_time - report_start_time >= self._report_interval:
                         mean_step_time = step_time_sum / step_time_count if step_time_count > 0 else 0.0
-                        logging.info(
+                        # Periodic (every _report_interval): DEBUG.
+                        logger.debug(
                             f"[{self} {self._report_interval}s Report] step_time > {EXPECTED_CONTROL_PERIOD}s: {step_time_exceed_count} times, mean step_time: {mean_step_time:.6f} s, max step_time: {max_step_time:.6f} s"
                         )
                         step_time_exceed_count = 0
@@ -597,9 +600,9 @@ class DMChainCanInterface(MotorChain):
                         motor_feedback = self._set_commands(commands)
                     except RuntimeError as e:
                         if self.enable_auto_recovery and "Motor error detected" in str(e):
-                            logging.warning(f"Motor error in control loop, attempting recovery: {e}")
+                            logger.warning(f"Motor error in control loop, attempting recovery: {e}")
                             if self._try_recover_motors():
-                                logging.warning("Motor recovery successful, continuing control loop")
+                                logger.warning("Motor recovery successful, continuing control loop")
                                 continue
                             self.running = False
                             raise
@@ -608,12 +611,12 @@ class DMChainCanInterface(MotorChain):
                     errors = np.array([motor_feedback[i].error_code != "0x1" for i in range(len(motor_feedback))])
                     if np.any(errors):
                         if self.enable_auto_recovery:
-                            logging.warning(f"Motor errors detected in feedback: {errors}, attempting recovery")
+                            logger.warning(f"Motor errors detected in feedback: {errors}, attempting recovery")
                             if self._try_recover_motors(motor_feedback):
-                                logging.warning("Motor recovery successful, continuing control loop")
+                                logger.warning("Motor recovery successful, continuing control loop")
                                 continue
                         self.running = False
-                        logging.error(f"motor errors: {errors}")
+                        logger.error(f"motor errors: {errors}")
                         raise Exception(f"motor errors detected: {errors}, stopping control loop")
 
                     with self.state_lock:
@@ -627,7 +630,7 @@ class DMChainCanInterface(MotorChain):
                     self._rate_recorder.track()
                     self._pace()  # I8: hold the period (and yield the GIL) instead of a fixed 0.5 ms nap
                 except Exception as e:
-                    print(f"DM Error in control loop: {e}")
+                    logger.error(f"DM Error in control loop: {e}")
                     self.running = False
                     raise e
 
@@ -670,14 +673,14 @@ class DMChainCanInterface(MotorChain):
 
             for idx in error_indices:
                 motor_id, motor_type = self.motor_list[idx]
-                logging.warning(f"Recovering motor {motor_id} ({motor_type}), attempt {attempt + 1}/{max_retries}")
+                logger.warning(f"Recovering motor {motor_id} ({motor_type}), attempt {attempt + 1}/{max_retries}")
                 self.motor_interface.clean_error(motor_id)
                 time.sleep(0.003)
                 self.motor_interface.try_receive_message(timeout=0.002)
                 try:
                     self.motor_interface.motor_on(motor_id, motor_type)
                 except Exception as e:
-                    logging.warning(f"Motor {motor_id} re-enable failed: {e}")
+                    logger.warning(f"Motor {motor_id} re-enable failed: {e}")
                     continue
 
             # Verify recovery by sending commands
@@ -688,7 +691,7 @@ class DMChainCanInterface(MotorChain):
                 motor_feedback = self._set_commands(commands)
                 if True:
                     if all(fb.error_code == "0x1" for fb in motor_feedback):
-                        logging.warning("All motors recovered successfully")
+                        logger.warning("All motors recovered successfully")
                         with self.state_lock:
                             self.state = motor_feedback
                             self._update_absolute_positions(motor_feedback)
@@ -719,7 +722,7 @@ class DMChainCanInterface(MotorChain):
                     torque=torque,
                 )
             except Exception as e:
-                logging.error(f"{idx}th motor at DMChainCanInterface {self} failed with info {motor_info}")
+                logger.error(f"{idx}th motor at DMChainCanInterface {self} failed with info {motor_info}")
                 raise e
 
             motor_feedback.append(fd_back)
