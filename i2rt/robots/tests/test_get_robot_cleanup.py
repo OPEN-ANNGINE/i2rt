@@ -44,3 +44,32 @@ def test_real_robot_construction_failure_closes_the_enabled_motor_chain(monkeypa
 
     assert chain.started
     assert chain.closed
+
+
+def test_real_robot_accepts_gravity_idle_tuning_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Callers can tune a leader without changing the shared arm-family YAML."""
+    chain = FakeMotorChain()
+    captured: dict[str, Any] = {}
+
+    monkeypatch.setattr(factory, "DMChainCanInterface", lambda *_args, **_kwargs: chain)
+
+    def build_robot(**kwargs: Any) -> object:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(factory, "MotorChainRobot", build_robot)
+    gravity = np.array([1.0, 1.1, 1.1, 1.2, 1.0, 1.0])
+    damping = np.array([0.07, 0.07, 0.07, 0.18, 0.04, 0.04])
+    friction = np.array([0.30, 0.30, 0.30, 0.06, 0.06, 0.06])
+
+    factory.get_yam_robot(
+        gripper_type=GripperType.YAM_TEACHING_HANDLE,
+        gravity_comp_factor=gravity,
+        grav_comp_kd=damping,
+        coulomb_friction=friction,
+    )
+
+    np.testing.assert_allclose(captured["gravity_comp_factor"], gravity)
+    np.testing.assert_allclose(captured["grav_comp_kd"], damping)
+    np.testing.assert_allclose(captured["coulomb_friction"], friction)
+    assert captured["use_coulomb_friction"] is False

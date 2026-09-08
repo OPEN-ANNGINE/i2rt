@@ -138,6 +138,8 @@ def get_yam_robot(  # noqa: PLR0917 -- public compatibility surface for arm/grip
     ee_mass: Optional[float] = None,
     ee_inertia: Optional[np.ndarray] = None,
     gravity_comp_factor: Optional[np.ndarray] = None,
+    grav_comp_kd: Optional[np.ndarray] = None,
+    coulomb_friction: Optional[np.ndarray] = None,
     gripper_limits_override: Optional[np.ndarray] = None,
     gripper_kp: Optional[float] = None,
     gripper_kd: Optional[float] = None,
@@ -161,6 +163,11 @@ def get_yam_robot(  # noqa: PLR0917 -- public compatibility surface for arm/grip
         ee_inertia: Optional 10-element inertia override [ipos(3), quat(4), diaginertia(3)].
         gravity_comp_factor: Per-joint array (6 elements, arm joints only) multiplied against gravity torques.
             Overrides the arm-type default when provided.
+        grav_comp_kd: Per-joint MIT-mode damping (6 elements, arm joints only) used in
+            gravity-compensation idle. Overrides the arm-type default when provided.
+        coulomb_friction: Per-joint Coulomb friction magnitude (6 elements, arm joints only).
+            Overrides the arm-type default when provided; it is applied only when
+            ``use_coulomb_friction`` is True.
         gripper_limits_override: Optional [closed, open] limits. If provided, skips calibration.
         gripper_kp: Optional gripper kp override. Defaults to gripper_type's default.
         gripper_kd: Optional gripper kd override. Defaults to gripper_type's default.
@@ -206,8 +213,12 @@ def get_yam_robot(  # noqa: PLR0917 -- public compatibility surface for arm/grip
     directions = list(hw.directions)
     kp = hw.kp.copy()
     kd = hw.kd.copy()
-    grav_comp_kd = hw.grav_comp_kd.copy()
-    coulomb_friction = hw.coulomb_friction.copy()
+    grav_comp_kd = hw.grav_comp_kd.copy() if grav_comp_kd is None else np.asarray(grav_comp_kd, dtype=float).copy()
+    coulomb_friction = (
+        hw.coulomb_friction.copy()
+        if coulomb_friction is None
+        else np.asarray(coulomb_friction, dtype=float).copy()
+    )
     motor_offsets = [0.0] * len(motor_list)
 
     if with_gripper:
