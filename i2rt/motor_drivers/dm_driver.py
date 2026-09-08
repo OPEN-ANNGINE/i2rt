@@ -444,6 +444,12 @@ class DMChainCanInterface(MotorChain):
 
         self.state = None
         self.state_lock = threading.Lock()
+        # I11 (ann-yam): a monotonic counter and CLOCK_MONOTONIC stamp of real CAN feedback
+        # rounds. Bumped exactly once per control-loop round that returns fresh motor
+        # feedback, so a consumer can tell a genuinely new CAN frame from a cached re-read
+        # (read_states()/set_commands() re-stamp every cached read with time.time()).
+        self._feedback_seq = 0
+        self._feedback_t_ns = 0
         self._report_interval = report_interval
         self._rate_recorder = RateRecorder(name=self, report_interval=report_interval)
         # I8 (ann-yam): the control thread is paced to control_freq instead of running as fast as
@@ -622,6 +628,11 @@ class DMChainCanInterface(MotorChain):
                     with self.state_lock:
                         self.state = motor_feedback
                         self._update_absolute_positions(motor_feedback)
+                        # I11 (ann-yam): this round really returned fresh CAN feedback; bump
+                        # the monotonic sequence under the same lock so a consumer that sees a
+                        # new sequence number has also seen the state it belongs to.
+                        self._feedback_seq += 1
+                        self._feedback_t_ns = time.monotonic_ns()
                     if self.same_bus_device_driver is not None:
                         time.sleep(0.001)
                         with self.same_bus_device_lock:
@@ -756,6 +767,18 @@ class DMChainCanInterface(MotorChain):
         """
         with self.state_lock:
             self.motor_offset[motor_idx] = self.absolute_positions[motor_idx]
+
+    def latest_feedback(self) -> Tuple[int, int]:
+        """(round number, CLOCK_MONOTONIC ns) of the last REAL CAN feedback round (I11).
+
+        ``_feedback_seq`` increments exactly once per control-loop round that returns fresh
+        motor feedback and is bumped under ``state_lock`` together with ``self.state``. It is
+        the reliable "is there new CAN feedback" signal: ``read_states()``/``set_commands()``
+        re-stamp every *cached* read with ``timestamp = time.time()``, so the joint state's
+        timestamp advances at the robot-server poll rate, not the CAN rate. Returns (0, 0)
+        before the first control-loop round. Read without the lock: the GIL makes the two
+        words atomic enough for a consumer to detect that a new round happened."""
+        return self._feedback_seq, self._feedback_t_ns
 
     def set_commands(
         self,
