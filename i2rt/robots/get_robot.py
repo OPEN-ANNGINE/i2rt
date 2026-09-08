@@ -130,7 +130,7 @@ def _get_gripper_only_robot(
     )
 
 
-def get_yam_robot(
+def get_yam_robot(  # noqa: PLR0917 -- public compatibility surface for arm/gripper hardware options
     channel: str = "can0",
     arm_type: ArmType = ArmType.YAM,
     gripper_type: GripperType = GripperType.LINEAR_4310,
@@ -266,49 +266,58 @@ def get_yam_robot(
         enable_auto_recovery=enable_auto_recovery,
         **({"control_freq": float(control_freq)} if control_freq else {}),
     )
-    motor_states = motor_chain.read_states()
-    logger.debug(f"motor_states: {motor_states}")
+    try:
+        motor_states = motor_chain.read_states()
+        logger.debug(f"motor_states: {motor_states}")
 
-    logger.info(f"current_pos: {[m.pos for m in motor_states]}")
-    for idx, state in enumerate(motor_states):
-        if state.pos < -np.pi:
-            logger.info(f"motor {idx} pos={state.pos:.3f}, offset -2π")
-            motor_chain.motor_offset[idx] -= 2 * np.pi
-        elif state.pos > np.pi:
-            logger.info(f"motor {idx} pos={state.pos:.3f}, offset +2π")
-            motor_chain.motor_offset[idx] += 2 * np.pi
+        logger.info(f"current_pos: {[m.pos for m in motor_states]}")
+        for idx, state in enumerate(motor_states):
+            if state.pos < -np.pi:
+                logger.info(f"motor {idx} pos={state.pos:.3f}, offset -2π")
+                motor_chain.motor_offset[idx] -= 2 * np.pi
+            elif state.pos > np.pi:
+                logger.info(f"motor {idx} pos={state.pos:.3f}, offset +2π")
+                motor_chain.motor_offset[idx] += 2 * np.pi
 
-    logger.info(f"adjusted motor_offsets: {motor_chain.motor_offset.tolist()}")
+        logger.info(f"adjusted motor_offsets: {motor_chain.motor_offset.tolist()}")
 
-    # Start the control thread with corrected offsets.
-    motor_chain.start_thread()
-    logger.info(f"YAM initial motor_states: {motor_chain.read_states()}")
+        # Start the control thread with corrected offsets.
+        motor_chain.start_thread()
+        logger.info(f"YAM initial motor_states: {motor_chain.read_states()}")
 
-    get_robot = partial(
-        MotorChainRobot,
-        motor_chain=motor_chain,
-        xml_path=model_path,
-        use_gravity_comp=True,
-        gravity_comp_factor=effective_gravity_comp,
-        joint_limits=joint_limits,
-        kp=kp,
-        kd=kd,
-        grav_comp_kd=grav_comp_kd,
-        coulomb_friction=coulomb_friction,
-        use_coulomb_friction=use_coulomb_friction,
-        zero_gravity_mode=zero_gravity_mode,
-        joint_state_saver_factory=joint_state_saver_factory,
-        set_realtime_and_pin_callback=set_realtime_and_pin_callback,
-        **({"test_torque": float(gripper_test_torque)} if gripper_test_torque is not None else {}),
-    )
-
-    if with_gripper:
-        return get_robot(
-            gripper_index=n_arm_joints,
-            gripper_limits=gripper_limits,
-            enable_gripper_calibration=gripper_needs_cal,
-            gripper_type=gripper_type,
-            arm_type=arm_type,
-            limit_gripper_force=50.0,
+        get_robot = partial(
+            MotorChainRobot,
+            motor_chain=motor_chain,
+            xml_path=model_path,
+            use_gravity_comp=True,
+            gravity_comp_factor=effective_gravity_comp,
+            joint_limits=joint_limits,
+            kp=kp,
+            kd=kd,
+            grav_comp_kd=grav_comp_kd,
+            coulomb_friction=coulomb_friction,
+            use_coulomb_friction=use_coulomb_friction,
+            zero_gravity_mode=zero_gravity_mode,
+            joint_state_saver_factory=joint_state_saver_factory,
+            set_realtime_and_pin_callback=set_realtime_and_pin_callback,
+            **({"test_torque": float(gripper_test_torque)} if gripper_test_torque is not None else {}),
         )
-    return get_robot()
+
+        if with_gripper:
+            return get_robot(
+                gripper_index=n_arm_joints,
+                gripper_limits=gripper_limits,
+                enable_gripper_calibration=gripper_needs_cal,
+                gripper_type=gripper_type,
+                arm_type=arm_type,
+                limit_gripper_force=50.0,
+            )
+        return get_robot()
+    except BaseException:
+        # DMChainCanInterface enables motors in its constructor. If any later read/model/robot
+        # setup fails, stop its command thread before propagating the original exception.
+        try:
+            motor_chain.close()
+        except Exception:
+            logger.exception("failed to close the motor chain after YAM construction failed")
+        raise
