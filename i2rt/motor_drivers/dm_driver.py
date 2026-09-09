@@ -634,7 +634,9 @@ class DMChainCanInterface(MotorChain):
                         self._feedback_seq += 1
                         self._feedback_t_ns = time.monotonic_ns()
                     if self.same_bus_device_driver is not None:
-                        time.sleep(0.001)
+                        # Step-2 experiment (2026-09-09): no fixed 1 ms nap before the
+                        # same-bus teaching-handle read -- it was ~24 % of the 4.17 ms slot
+                        # and pushed the leader CAN round to ~8.7 ms (115 Hz).
                         with self.same_bus_device_lock:
                             # assume the same bus device is a passive input device (no commands to send) for now.
                             self.same_bus_device_states = self.same_bus_device_driver.read_states()
