@@ -656,8 +656,13 @@ class DMChainCanInterface(MotorChain):
             time.sleep(0.0005)
             return
         now = time.perf_counter()
-        if self._next_slot is None or now - self._next_slot > self.control_period:
+        if self._next_slot is None:
             self._next_slot = now + self.control_period
+        elif now - self._next_slot > self.control_period:
+            # Already past the slot: resync to now, as the docstring says. Adding a period on
+            # top of `now` made every late round cost its work PLUS a period -- on the SZ rig
+            # at a 4.17 ms target, 43 % of rounds came out ~8.7 ms apart instead of ~4.5 ms.
+            self._next_slot = now
         else:
             self._next_slot += self.control_period
         rem = self._next_slot - now
