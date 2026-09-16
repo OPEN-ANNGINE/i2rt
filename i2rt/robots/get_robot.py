@@ -130,7 +130,7 @@ def _get_gripper_only_robot(
     )
 
 
-def get_yam_robot(
+def get_yam_robot(  # noqa: PLR0917 -- public compatibility surface for arm/gripper hardware options
     channel: str = "can0",
     arm_type: ArmType = ArmType.YAM,
     gripper_type: GripperType = GripperType.LINEAR_4310,
@@ -138,6 +138,8 @@ def get_yam_robot(
     ee_mass: Optional[float] = None,
     ee_inertia: Optional[np.ndarray] = None,
     gravity_comp_factor: Optional[np.ndarray] = None,
+    grav_comp_kd: Optional[np.ndarray] = None,
+    coulomb_friction: Optional[np.ndarray] = None,
     gripper_limits_override: Optional[np.ndarray] = None,
     gripper_kp: Optional[float] = None,
     gripper_kd: Optional[float] = None,
@@ -146,6 +148,8 @@ def get_yam_robot(
     set_realtime_and_pin_callback: Optional[Callable[[int], None]] = None,
     enable_auto_recovery: bool = False,
     use_coulomb_friction: bool = False,
+    gripper_test_torque: Optional[float] = None,
+    control_freq: Optional[float] = None,  # I8: pace the CAN control thread (Hz); None = i2rt's default
 ) -> "Robot":
     """Create a YAM-family robot (real or sim).
 
@@ -159,6 +163,11 @@ def get_yam_robot(
         ee_inertia: Optional 10-element inertia override [ipos(3), quat(4), diaginertia(3)].
         gravity_comp_factor: Per-joint array (6 elements, arm joints only) multiplied against gravity torques.
             Overrides the arm-type default when provided.
+        grav_comp_kd: Per-joint MIT-mode damping (6 elements, arm joints only) used in
+            gravity-compensation idle. Overrides the arm-type default when provided.
+        coulomb_friction: Per-joint Coulomb friction magnitude (6 elements, arm joints only).
+            Overrides the arm-type default when provided; it is applied only when
+            ``use_coulomb_friction`` is True.
         gripper_limits_override: Optional [closed, open] limits. If provided, skips calibration.
         gripper_kp: Optional gripper kp override. Defaults to gripper_type's default.
         gripper_kd: Optional gripper kd override. Defaults to gripper_type's default.
@@ -168,6 +177,8 @@ def get_yam_robot(
         use_coulomb_friction: If True, add the per-joint Coulomb friction feedforward (from the arm
             config) during gravity compensation. Defaults to False. Only affects real hardware; ignored
             in sim mode (SimRobot has no friction feedforward).
+        gripper_test_torque: Torque (Nm) used by the gripper limit auto-calibration sweep. None keeps
+            MotorChainRobot's default.
     """
     # --- Gripper-only path (no arm) -------------------------------------------
     if arm_type == ArmType.NO_ARM:
@@ -202,8 +213,12 @@ def get_yam_robot(
     directions = list(hw.directions)
     kp = hw.kp.copy()
     kd = hw.kd.copy()
-    grav_comp_kd = hw.grav_comp_kd.copy()
-    coulomb_friction = hw.coulomb_friction.copy()
+    grav_comp_kd = hw.grav_comp_kd.copy() if grav_comp_kd is None else np.asarray(grav_comp_kd, dtype=float).copy()
+    coulomb_friction = (
+        hw.coulomb_friction.copy()
+        if coulomb_friction is None
+        else np.asarray(coulomb_friction, dtype=float).copy()
+    )
     motor_offsets = [0.0] * len(motor_list)
 
     if with_gripper:
@@ -211,7 +226,7 @@ def get_yam_robot(
         default_kp, default_kd = gripper_type.get_motor_kp_kd(arm_type)
         _gripper_kp = gripper_kp if gripper_kp is not None else default_kp
         _gripper_kd = gripper_kd if gripper_kd is not None else default_kd
-        logging.info(f"adding gripper motor type={motor_type}, kp={_gripper_kp}, kd={_gripper_kd}")
+        logger.info(f"adding gripper motor type={motor_type}, kp={_gripper_kp}, kd={_gripper_kd}")
         motor_list.append([0x07, motor_type])
         motor_offsets.append(0.0)
         directions.append(gripper_type.get_motor_direction(arm_type))
@@ -260,49 +275,60 @@ def get_yam_robot(
         get_same_bus_device_driver=get_encoder_chain if with_teaching_handle else None,
         use_buffered_reader=False,
         enable_auto_recovery=enable_auto_recovery,
+        **({"control_freq": float(control_freq)} if control_freq else {}),
     )
-    motor_states = motor_chain.read_states()
-    logging.debug(f"motor_states: {motor_states}")
+    try:
+        motor_states = motor_chain.read_states()
+        logger.debug(f"motor_states: {motor_states}")
 
-    logging.info(f"current_pos: {[m.pos for m in motor_states]}")
-    for idx, state in enumerate(motor_states):
-        if state.pos < -np.pi:
-            logging.info(f"motor {idx} pos={state.pos:.3f}, offset -2π")
-            motor_chain.motor_offset[idx] -= 2 * np.pi
-        elif state.pos > np.pi:
-            logging.info(f"motor {idx} pos={state.pos:.3f}, offset +2π")
-            motor_chain.motor_offset[idx] += 2 * np.pi
+        logger.info(f"current_pos: {[m.pos for m in motor_states]}")
+        for idx, state in enumerate(motor_states):
+            if state.pos < -np.pi:
+                logger.info(f"motor {idx} pos={state.pos:.3f}, offset -2π")
+                motor_chain.motor_offset[idx] -= 2 * np.pi
+            elif state.pos > np.pi:
+                logger.info(f"motor {idx} pos={state.pos:.3f}, offset +2π")
+                motor_chain.motor_offset[idx] += 2 * np.pi
 
-    logging.info(f"adjusted motor_offsets: {motor_chain.motor_offset.tolist()}")
+        logger.info(f"adjusted motor_offsets: {motor_chain.motor_offset.tolist()}")
 
-    # Start the control thread with corrected offsets.
-    motor_chain.start_thread()
-    logging.info(f"YAM initial motor_states: {motor_chain.read_states()}")
+        # Start the control thread with corrected offsets.
+        motor_chain.start_thread()
+        logger.info(f"YAM initial motor_states: {motor_chain.read_states()}")
 
-    get_robot = partial(
-        MotorChainRobot,
-        motor_chain=motor_chain,
-        xml_path=model_path,
-        use_gravity_comp=True,
-        gravity_comp_factor=effective_gravity_comp,
-        joint_limits=joint_limits,
-        kp=kp,
-        kd=kd,
-        grav_comp_kd=grav_comp_kd,
-        coulomb_friction=coulomb_friction,
-        use_coulomb_friction=use_coulomb_friction,
-        zero_gravity_mode=zero_gravity_mode,
-        joint_state_saver_factory=joint_state_saver_factory,
-        set_realtime_and_pin_callback=set_realtime_and_pin_callback,
-    )
-
-    if with_gripper:
-        return get_robot(
-            gripper_index=n_arm_joints,
-            gripper_limits=gripper_limits,
-            enable_gripper_calibration=gripper_needs_cal,
-            gripper_type=gripper_type,
-            arm_type=arm_type,
-            limit_gripper_force=50.0,
+        get_robot = partial(
+            MotorChainRobot,
+            motor_chain=motor_chain,
+            xml_path=model_path,
+            use_gravity_comp=True,
+            gravity_comp_factor=effective_gravity_comp,
+            joint_limits=joint_limits,
+            kp=kp,
+            kd=kd,
+            grav_comp_kd=grav_comp_kd,
+            coulomb_friction=coulomb_friction,
+            use_coulomb_friction=use_coulomb_friction,
+            zero_gravity_mode=zero_gravity_mode,
+            joint_state_saver_factory=joint_state_saver_factory,
+            set_realtime_and_pin_callback=set_realtime_and_pin_callback,
+            **({"test_torque": float(gripper_test_torque)} if gripper_test_torque is not None else {}),
         )
-    return get_robot()
+
+        if with_gripper:
+            return get_robot(
+                gripper_index=n_arm_joints,
+                gripper_limits=gripper_limits,
+                enable_gripper_calibration=gripper_needs_cal,
+                gripper_type=gripper_type,
+                arm_type=arm_type,
+                limit_gripper_force=50.0,
+            )
+        return get_robot()
+    except BaseException:
+        # DMChainCanInterface enables motors in its constructor. If any later read/model/robot
+        # setup fails, stop its command thread before propagating the original exception.
+        try:
+            motor_chain.close()
+        except Exception:
+            logger.exception("failed to close the motor chain after YAM construction failed")
+        raise

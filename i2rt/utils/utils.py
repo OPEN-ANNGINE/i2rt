@@ -3,6 +3,8 @@ import time
 from types import TracebackType
 from typing import Optional, Type
 
+logger = logging.getLogger(__name__)
+
 
 class RateRecorder:
     def __init__(
@@ -45,7 +47,8 @@ class RateRecorder:
         elapsed_time = time.time() - self.last_report_time
         rate = self.iteration_count / elapsed_time if elapsed_time > 0 else 0
         self.last_rate = rate
-        logging.info(f"{self.name} Total rate: {rate:.2f} iterations per second over {elapsed_time:.2f} seconds.")
+        # Periodic (every report_interval): DEBUG, so a host CLI is not narrated at.
+        logger.debug(f"{self.name} Total rate: {rate:.2f} iterations per second over {elapsed_time:.2f} seconds.")
         return rate
 
     def track(self) -> None:
